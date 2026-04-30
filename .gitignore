@@ -1,0 +1,6 @@
+room_temp_batteries/
+cat_venv/
+__pycache__/
+*.pyc
+*.png
+*.ipynb_checkpoints/
