@@ -17,21 +17,3 @@ parameter ID + LSTM-predicted ECM params → 4-estimator comparison.
 └── room_temp_batteries/       # data (B0005 = train, B0006 = validation)
 ```
 
-## Setup
-
-```bash
-source cat_venv/bin/activate    # Python 3.13 venv
-```
-
-## Run
-
-`discharge_ground_truth.csv` is committed under each battery dir, so the
-ground-truth notebook only needs to run when those files are missing.
-
-```bash
-jupyter notebook pipeline.ipynb
-```
-
-Then execute cells top-to-bottom. The notebook trains on B0005 and validates
-on B0006, producing the final 4-estimator RMSE table on a fresh and an aged
-cycle.
