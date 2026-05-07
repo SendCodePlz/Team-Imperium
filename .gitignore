@@ -5,3 +5,5 @@ __pycache__/
 *.ipynb_checkpoints/
 cleaned_dataset/
 room_temp_batteries/
+CLAUDE.md
+.DS_Store
