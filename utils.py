@@ -159,6 +159,171 @@ def plot_soc_error(t, truth, *estimates, labels=None,
 
 
 # ---------------------------------------------------------------------------
+# Static OCV lookup table  (the on-device / ESP representation)
+# ---------------------------------------------------------------------------
+
+def make_ocv_lookup(soc_grid, ocv_grid):
+    """Wrap a (SOC, OCV) lookup table as a callable OCV(SOC).
+
+    This is exactly what runs on the ESP: two flat arrays + linear interp
+    (`np.interp` -> a `lerp` over the bracketing grid points on-device). SOC is
+    clipped to [grid_min, grid_max] so the filter never extrapolates past the
+    table, which is the failure mode a fitted polynomial has at SOC -> 0.
+    """
+    soc_grid = np.asarray(soc_grid, dtype=float)
+    ocv_grid = np.asarray(ocv_grid, dtype=float)
+
+    def ocv(soc):
+        return np.interp(np.clip(soc, soc_grid[0], soc_grid[-1]), soc_grid, ocv_grid)
+
+    return ocv
+
+
+def build_static_ocv(battery_id, r0r1_prior, n_grid: int = 51,
+                     n_cycles: int = 5, soc_lo: float = 0.15):
+    """Build ONE static OCV(SOC) lookup table from a battery's fresh cycles.
+
+    No SOH dependence — a single curve, the "normal OCV that is not fitted
+    per-cycle". Anchors come from two sources, pooled over the first
+    `n_cycles` (freshest) discharge cycles:
+
+      * rested endpoints: V at t=0 (SOC=1, fully charged) and the relaxed
+        voltage at the end of the post-discharge rest (SOC = SOC_end);
+      * IR-corrected active-discharge samples ``V - I*(R0+R1)_prior`` for
+        SOC > `soc_lo` (low-SOC samples are dropped because the cell's true
+        impedance balloons there and drags the curve down).
+
+    The pooled (SOC, OCV) cloud is binned onto a uniform SOC grid, forced
+    monotonically non-decreasing (OCV rises with SOC), gap-filled, and returned.
+
+    Returns
+    -------
+    (soc_grid, ocv_grid) : two 1-D arrays of length `n_grid`.
+    """
+    disc = discharge_metadata(battery_id)
+    soc_pts, ocv_pts = [], []
+    for _, row in disc.head(n_cycles).iterrows():
+        cyc = load_cycle(battery_id, row['filename'])
+        t = cyc['Time'].to_numpy()
+        i = cyc['Current_measured'].to_numpy()
+        v = cyc['Voltage_measured'].to_numpy()
+        # SOC referenced to THIS cycle's true capacity, so the OCV table is
+        # capacity-referenced and stays valid as the cell ages.
+        soc = coulomb_count(t, i, soc_init=1.0, q_ah=float(row['Capacity']))
+
+        active = i < ACTIVE_DISCHARGE_I_A
+        if not active.any():
+            continue
+        # IR-corrected OCV on the active CC phase, away from the low-SOC tail
+        keep = active & (soc > soc_lo)
+        soc_pts.append(soc[keep])
+        ocv_pts.append(v[keep] - i[keep] * r0r1_prior)
+        # rested endpoints (no IR correction needed at rest)
+        soc_pts.append(np.array([1.0, float(soc[-1])]))
+        ocv_pts.append(np.array([float(v[0]), float(v[-1])]))
+
+    soc_all = np.concatenate(soc_pts)
+    ocv_all = np.concatenate(ocv_pts)
+
+    soc_grid = np.linspace(0.0, 1.0, n_grid)
+    # bin-average onto the grid
+    idx = np.clip(np.digitize(soc_all, soc_grid) - 1, 0, n_grid - 1)
+    ocv_grid = np.full(n_grid, np.nan)
+    for b in range(n_grid):
+        sel = idx == b
+        if sel.any():
+            ocv_grid[b] = ocv_all[sel].mean()
+    # fill empty bins by interpolating over the filled ones
+    filled = ~np.isnan(ocv_grid)
+    ocv_grid = np.interp(soc_grid, soc_grid[filled], ocv_grid[filled])
+    # enforce monotonic non-decreasing OCV vs SOC
+    ocv_grid = np.maximum.accumulate(ocv_grid)
+    return soc_grid, ocv_grid
+
+
+# ---------------------------------------------------------------------------
+# 1RC parameter identification (single cycle) + identifiability diagnostics
+# ---------------------------------------------------------------------------
+
+def fit_1rc_cycle(t, i, v, ocv_fn, q_ah: float = Q_NOMINAL_AH,
+                  current_threshold: float = 0.05,
+                  tau_bounds=(5.0, 120.0), min_relax_s: float = 120.0):
+    """Joint least-squares fit of (R0, R1, tau, V_inf) for one discharge cycle.
+
+    Uses the active CC-discharge phase plus the post-discharge relaxation tail,
+    with the shared sign convention ``V_t = OCV(SOC) + I*R0 + V_RC1`` (I < 0 in
+    discharge). Unlike the heavier pipeline version, `tau` is bounded tightly
+    (default 5-120 s) and the **1-sigma parameter standard errors** (sqrt of the
+    `curve_fit` covariance diagonal) are returned so callers can quantify how
+    well each parameter is actually identified by this data.
+
+    Returns a dict with R0, R1, C1, tau, V_inf, the per-parameter std_errs,
+    `settled` (did the relaxation tail flatten out), and `n_active`, or None if
+    the cycle can't be fit.
+    """
+    from scipy.optimize import curve_fit
+
+    t = np.asarray(t, dtype=float)
+    i = np.asarray(i, dtype=float)
+    v = np.asarray(v, dtype=float)
+
+    active_idx = np.where(np.abs(i) > current_threshold)[0]
+    if len(active_idx) < 5:
+        return None
+    end = active_idx[-1]
+
+    t_act = t[:end + 1]
+    i_act = i[:end + 1]
+    v_act = v[:end + 1]
+    soc_act = coulomb_count(t_act, i_act, soc_init=1.0, q_ah=q_ah)
+    ocv_act = ocv_fn(soc_act)
+    t_act_rel = t_act - t_act[0]
+    n_act = len(t_act)
+
+    relax = slice(end + 1, len(t))
+    t_rel = t[relax] - t[relax][0] if (len(t) - end - 1) >= 5 else np.array([])
+    v_rel = v[relax] if len(t_rel) else np.array([])
+    n_rel = len(t_rel)
+
+    settled = False
+    if n_rel >= 3 and t_rel[-1] >= min_relax_s:
+        last = t_rel >= (t_rel[-1] - 60.0)
+        if last.sum() >= 2:
+            dvdt = (v_rel[last][-1] - v_rel[last][0]) / max(t_rel[last][-1] - t_rel[last][0], 1e-3)
+            settled = abs(dvdt) * 1000.0 < 2.0
+
+    def model(_x, R0, R1, tau, V_inf):
+        out = np.empty(n_act + n_rel)
+        out[:n_act] = ocv_act + i_act * R0 + i_act * R1 * (1.0 - np.exp(-t_act_rel / tau))
+        if n_rel:
+            v_rc_disc = i_act[-1] * R1 * (1.0 - np.exp(-t_act_rel[-1] / tau))
+            out[n_act:] = V_inf + v_rc_disc * np.exp(-t_rel / tau)
+        return out
+
+    y = np.concatenate([v_act, v_rel]) if n_rel else v_act
+    v_inf0 = float(v_rel[-1]) if n_rel else float(v_act[-1])
+    try:
+        popt, pcov = curve_fit(
+            model, np.zeros(n_act + n_rel), y,
+            p0=[0.10, 0.05, np.mean(tau_bounds), v_inf0],
+            bounds=([1e-3, 1e-3, tau_bounds[0], 2.0],
+                    [0.5, 0.5, tau_bounds[1], 4.5]),
+            maxfev=8000,
+        )
+    except Exception:
+        return None
+
+    R0_h, R1_h, tau_h, V_inf_h = (float(x) for x in popt)
+    std = np.sqrt(np.clip(np.diag(pcov), 0.0, np.inf))
+    return {
+        'R0': R0_h, 'R1': R1_h, 'C1': tau_h / R1_h, 'tau': tau_h, 'V_inf': V_inf_h,
+        'std_errs': {'R0': float(std[0]), 'R1': float(std[1]),
+                     'tau': float(std[2]), 'V_inf': float(std[3])},
+        'settled': bool(settled), 'n_active': int(n_act),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 1RC ECM + UKF
 # ---------------------------------------------------------------------------
 
