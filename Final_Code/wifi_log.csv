@@ -1,0 +1,1 @@
+wall_time,ts_ms,seq,v1,v2,v3,T_surf,current,SOC_pct,fault_bits,active_faults,est_severity,gt_severity,soc_est,soh_est,tier,chg_state,dsc_state,ground_truth,outcome,is_heartbeat

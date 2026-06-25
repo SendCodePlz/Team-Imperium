@@ -1,0 +1,7 @@
+# Team Imperium — BMS Demo (PC side)  |  pip install -r requirements.txt
+rich         # terminal dashboard
+pyserial     # ESP32 serial link (imported as `serial`)
+numpy        # numerics
+pandas       # dataset loading
+openpyxl     # reading the .xlsx dataset (pandas engine)
+matplotlib   # live GUI plot window

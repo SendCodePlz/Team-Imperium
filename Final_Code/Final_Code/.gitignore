@@ -1,0 +1,20 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Run outputs (regenerated each run)
+session.csv
+wifi_log.csv
+_*.csv
+_*.png
+
+# Keep the documentation asset (not an output)
+!ocv_comparison.png
