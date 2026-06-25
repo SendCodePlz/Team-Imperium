@@ -1,9 +1,0 @@
-cat_venv/
-__pycache__/
-*.pyc
-*.png
-*.ipynb_checkpoints/
-cleaned_dataset/
-room_temp_batteries/
-CLAUDE.md
-.DS_Store
