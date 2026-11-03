@@ -1,4 +1,7 @@
-# Team Imperium — BMS Fault-Detection Demo
+# Software & Firmware — Technical Reference
+
+> Part of [Team Imperium BMS](../README.md). This is the full technical reference for the
+> Python toolchain and the ESP32 firmware; the PCB lives in [`../hardware`](../hardware).
 
 Battery Management System prototype for the **Caterpillar Tech Challenge**.
 
@@ -411,7 +414,9 @@ BMS_ESP32_Demo/
 > and **excluding advisory faults** from scoring. Everything else stays at its
 > physical default.
 
-### Current sim score: **Prec 99.8% / Recall 49%** (FP=6)
+### Sim score (earlier 10-detector build): **Prec 99.8% / Recall 49%** (FP=6)
+
+> Latest 14-detector build: **Prec 99.6% / Recall 56%** (FP=12), with micro-short recall at 95%. See the root [README](../README.md#results).
 
 | Fault type | Recall | Note |
 |------------|--------|------|
