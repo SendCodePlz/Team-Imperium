@@ -18,3 +18,16 @@ _*.png
 
 # Keep the documentation asset (not an output)
 !ocv_comparison.png
+
+# KiCad caches / backups / local state
+fp-info-cache
+*-backups/
+*.kicad_prl.lck
+*.lck
+_autosave-*
+*.bak
+\#auto_saved_files#
+
+# Gerber / drill output (regenerate from hardware/BMS_Imperium.kicad_pcb)
+*.gbr
+*.drl
